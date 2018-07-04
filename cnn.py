@@ -41,16 +41,20 @@ def act(name):
         raise NameError('No matching activation')
     return fn
 
+def seed_to_randint(seed):
+    np.random.seed(seed)
+    return np.random.randint(1e9)
 
 def kern2D(n_x, n_y, n_kern, sig, rank=None, seed=0):
 
+
     if rank is None:
-        W = weights_tnorm([n_x, n_y, n_kern], sig=sig, seed=seed)
+        W = weights_tnorm([n_x, n_y, n_kern], sig=sig, seed=seed_to_randint(seed))
     else:
         W_list = []
         for i in range(n_kern):
-            W_list.append(tf.matmul(weights_tnorm([n_x, rank], sig=sig, seed=seed),
-                                    weights_tnorm([rank, n_y], sig=sig, seed=seed)))
+            W_list.append(tf.matmul(weights_tnorm([n_x, rank], sig=sig, seed=seed_to_randint(seed)+i),
+                                    weights_tnorm([rank, n_y], sig=sig, seed=seed_to_randint(seed)+i+n_kern)))
             # A = tf.Variable(tf.orthogonal_initializer(gain=sig/10, dtype=tf.float32)([int(n_x), int(rank)]))
             # B = tf.Variable(tf.orthogonal_initializer(gain=sig/10, dtype=tf.float32)([int(rank), int(n_y)]))
             # W_list.append(tf.matmul(A, B))
@@ -141,17 +145,22 @@ class Net:
                 X_pad = tf.pad(X, [[0, 0], [pad_size, 0], [0, 0]])
 
                 self.layers[i]['W'] = kern2D(self.layers[i]['time_win_smp'], n_input_feats, self.layers[i]['n_kern'],
-                                             self.weight_scale, seed=self.seed, rank=self.layers[i]['rank'])
+                                             self.weight_scale, seed=seed_to_randint(self.seed)+i, rank=self.layers[i]['rank'])
                 self.layers[i]['b'] = kern2D(1, 1, self.layers[i]['n_kern'],
-                                             self.weight_scale, seed=self.seed)
+                                             self.weight_scale, seed=seed_to_randint(self.seed)+i+self.n_layers)
                 self.layers[i]['Y'] = act(self.layers[i]['act'])(conv1d(X_pad, self.layers[i]['W'])
                                                                  + self.layers[i]['b'])
 
             elif self.layers[i]['type'] == 'reweight':
                 self.layers[i]['W'] = kern2D(1, n_input_feats, self.layers[i]['n_kern'],
-                                             self.weight_scale, seed=self.seed)
+                                             self.weight_scale, seed_to_randint(self.seed)+i)
                 self.layers[i]['Y'] = act(self.layers[i]['act'])(
                     conv1d(X, self.layers[i]['W']))
+
+            elif self.layers[i]['type'] == 'reweight-positive':
+                self.layers[i]['W'] = tf.abs(kern2D(1, n_input_feats, self.layers[i]['n_kern'],
+                                                    self.weight_scale, seed=seed_to_randint(self.seed)+i))
+                self.layers[i]['Y'] = act(self.layers[i]['act'])(conv1d(X, self.layers[i]['W']))
 
             else:
                 raise NameError('No matching layer type')
