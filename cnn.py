@@ -162,6 +162,19 @@ class Net:
                                                     self.weight_scale, seed=seed_to_randint(self.seed)+i))
                 self.layers[i]['Y'] = act(self.layers[i]['act'])(conv1d(X, self.layers[i]['W']))
 
+            elif self.layers[i]['type'] == 'normalization':
+
+                # pad input to ensure causality
+                pad_size = np.int32(
+                    np.floor(self.layers[i]['time_win_smp'] / 2))
+                X_pad = tf.pad(X, [[0, 0], [pad_size, 0], [0, 0]])
+
+                self.layers[i]['W'] = tf.abs(kern2D(self.layers[i]['time_win_smp'], n_input_feats, self.layers[i]['n_kern'],
+                                                    self.weight_scale, seed=seed_to_randint(self.seed)+i, rank=self.layers[i]['rank']))
+                self.layers[i]['b'] = tf.abs(kern2D(1, 1, self.layers[i]['n_kern'],
+                                                    self.weight_scale, seed=seed_to_randint(self.seed)+i+self.n_layers))
+                self.layers[i]['Y'] = X_pad / (act(self.layers[i]['act'])(conv1d(tf.abs(X_pad), self.layers[i]['W'])) + self.layers[i]['b'])
+
             else:
                 raise NameError('No matching layer type')
 
