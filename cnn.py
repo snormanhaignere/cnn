@@ -135,7 +135,7 @@ class Net:
 
             else:
                 X = self.layers[i - 1]['Y']
-                n_input_feats = self.layers[i - 1]['n_kern']
+                n_input_feats = np.int32(X.shape[2])
 
             if self.layers[i]['type'] == 'conv':
 
@@ -174,6 +174,8 @@ class Net:
                 self.layers[i]['b'] = tf.abs(kern2D(1, 1, self.layers[i]['n_kern'],
                                                     self.weight_scale, seed=seed_to_randint(self.seed)+i+self.n_layers))
                 self.layers[i]['Y'] = X_pad / (act(self.layers[i]['act'])(conv1d(tf.abs(X_pad), self.layers[i]['W'])) + self.layers[i]['b'])
+
+                #import pdb; pdb.set_trace()
 
             else:
                 raise NameError('No matching layer type')
