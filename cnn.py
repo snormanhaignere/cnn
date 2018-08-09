@@ -8,10 +8,6 @@ from matplotlib import pyplot as plt
 import importlib
 import inspect
 from copy import deepcopy
-from IPython.core.display import display, HTML
-display(HTML("<style>.container { width:100% !important; }</style>"))
-
-# tf.reset_default_graph()
 
 
 def weights_tnorm(shape, sig=0.1, seed=0):
