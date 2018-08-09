@@ -28,7 +28,7 @@ import cnn
 
 def fit(
     F, D, sr, time_win_sec, log_dir=os.getcwd(), log_id='id0', O={}, 
-    overwrite=False, plot_figures=True, sort_weights_PC1=False):
+    overwrite=False, plot_figures=True, sort_weights_PC1=False, sort_data_PC1=False):
     
     # default optional parameters
     P = {}
@@ -45,8 +45,7 @@ def fit(
     P['print_iter'] = True
 
     # replace defaults with optional parameters
-    P = misc.param_handling(P, O, maxlen=100, delimiter='/', 
-                            omit_key_from_idstring=['stim_labels', 'print_iter'])
+    P = misc.param_handling(P, O, maxlen=100, delimiter='/', omit_key_from_idstring=['stim_labels', 'print_iter'])
 
     # feature dimensionality
     n_stims = F.shape[0]
@@ -120,6 +119,8 @@ def fit(
     print('Train loss:', S['train_loss'][-1])
     print('Val loss:', S['val_loss'][-1])
     print('Test loss:', S['test_loss'][-1])
+
+    S['test_corr'] = np.corrcoef(S['Y'][S['train_val_test']==2, :, 0].flatten(), D[S['train_val_test']==2, :, 0].flatten())[0,1]
     
     if plot_figures:
 
@@ -134,17 +135,23 @@ def fit(
         plt.show()
 
         # predictions
+        xi = np.where(S['train_val_test']==2)[0]
+        if sort_data_PC1:
+            [U,E,V] = np.linalg.svd(np.transpose(D[xi,:,0]))
+            feat_weights = V[0,:] * np.sign(U[:,0].mean())
+            xi = xi[np.flipud(np.argsort(feat_weights))]
         plt.figure(figsize=(10,5))
         plt.subplot(1,2,1)
-        plot.imshow(D[S['train_val_test']==2,:,0])
+        plot.imshow(D[xi,:,0])
         plt.title('Data')
         plt.ylabel('Test stims')
         plt.xlabel('Time')
         plt.subplot(1,2,2)
-        plot.imshow(S['Y'][S['train_val_test']==2,:,0])
+        plot.imshow(S['Y'][xi,:,0])
         plt.title('Prediction')
         plt.ylabel('Test stims')
         plt.xlabel('Time')
+        del xi
         plt.savefig(save_directory + '/predictions_' + log_id + '.pdf', bbox_inches='tight')
         plt.show()
 
@@ -160,6 +167,7 @@ def fit(
         plt.title('Weights')
         plt.xlabel('Time')
         plt.ylabel('Feats')
+        del xi
         plt.savefig(save_directory + '/weights_' + log_id + '.pdf', bbox_inches='tight')
         plt.show()
 
