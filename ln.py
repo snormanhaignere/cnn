@@ -21,7 +21,7 @@ elif os.getcwd().find('/mindhive/nklab3') != -1:
     root_directory = '/mindhive/nklab/u/svnh'
 else:
     raise NameError('No root directory found')
-sys.path.append(root_directory)
+sys.path.append(root_directory) 
 from general_analysis import misc
 from general_analysis import plot
 import cnn
