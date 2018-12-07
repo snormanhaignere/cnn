@@ -15,9 +15,12 @@ def weights_tnorm(shape, sig=0.1, seed=0):
         shape, stddev=sig, mean=sig, seed=seed))
     return W
 
+def weights_norm(shape, sig=0.1, seed=0):
+    W = tf.Variable(tf.random_normal(shape, stddev=sig, mean=0, seed=seed))
+    return W
 
-def poisson(prediction, response):
-    return tf.reduce_mean(tf.reduce_sum(prediction - response * tf.log(prediction + 1e-5), 1), name='poisson')
+def poisson(response, prediction):
+    return tf.reduce_mean(prediction - response * tf.log(prediction + 1e-5), name='poisson')
 
 
 def conv1d(k, Y):
@@ -41,16 +44,26 @@ def seed_to_randint(seed):
     np.random.seed(seed)
     return np.random.randint(1e9)
 
-def kern2D(n_x, n_y, n_kern, sig, rank=None, seed=0):
+def kern2D(n_x, n_y, n_kern, sig, rank=None, seed=0, distr='tnorm'):
 
+    print(distr)
+
+    if distr == 'tnorm':
+        fn = weights_tnorm
+    elif distr == 'norm':
+        fn = weights_norm
+    else:
+        raise NameError('No matching distribution')
 
     if rank is None:
-        W = weights_tnorm([n_x, n_y, n_kern], sig=sig, seed=seed_to_randint(seed))
+        print('seed:',seed_to_randint(seed))
+        W = fn([n_x, n_y, n_kern], sig=sig, seed=seed_to_randint(seed))
     else:
         W_list = []
         for i in range(n_kern):
-            W_list.append(tf.matmul(weights_tnorm([n_x, rank], sig=sig, seed=seed_to_randint(seed)+i),
-                                    weights_tnorm([rank, n_y], sig=sig, seed=seed_to_randint(seed)+i+n_kern)))
+            print('seed for kern', i, ':', seed_to_randint(seed))
+            W_list.append(tf.matmul(fn([n_x, rank], sig=sig, seed=seed_to_randint(seed)+i),
+                                    fn([rank, n_y], sig=sig, seed=seed_to_randint(seed)+i+n_kern)))
             # A = tf.Variable(tf.orthogonal_initializer(gain=sig/10, dtype=tf.float32)([int(n_x), int(rank)]))
             # B = tf.Variable(tf.orthogonal_initializer(gain=sig/10, dtype=tf.float32)([int(rank), int(n_y)]))
             # W_list.append(tf.matmul(A, B))
@@ -58,13 +71,15 @@ def kern2D(n_x, n_y, n_kern, sig, rank=None, seed=0):
 
         W = tf.concat(W_list, 2)
 
+    print(W.shape)
+
     return W
 
 
 class Net:
 
     def __init__(self, data_dims, n_feats, sr_Hz, layers, loss_type='squared_error',
-                 weight_scale=0.1, seed=0, log_dir=None, log_id=None):
+                 weight_scale=0.1, seed=0, log_dir=None, log_id=None, optimizer='Adam'):
 
         # dimensionality of feature sand data
         self.n_stim = data_dims[0]
@@ -91,6 +106,7 @@ class Net:
         assert(self.layers[self.n_layers - 1]['n_kern'] == self.n_resp)
 
         # other misc parameters
+        self.optimizer = optimizer
         self.loss_type = loss_type
         self.train_loss = []
         self.val_loss = []
@@ -114,11 +130,16 @@ class Net:
 
     def initialize(self):
 
+        print('Initialize session')
         self.sess = tf.Session()
+        print('Initialize variables')
         self.sess.run(tf.global_variables_initializer())
+        print('Initialize saver')
         self.saver = tf.train.Saver(max_to_keep=1)
 
     def build(self, initialize=True):
+
+        print('Loc 0')
 
         self.W = []
         self.b = []
@@ -135,28 +156,44 @@ class Net:
 
             if self.layers[i]['type'] == 'conv':
 
+                print('Loc conv')
+
                 # pad input to ensure causality
                 pad_size = np.int32(
                     np.floor(self.layers[i]['time_win_smp'] / 2))
                 X_pad = tf.pad(X, [[0, 0], [pad_size, 0], [0, 0]])
 
                 self.layers[i]['W'] = kern2D(self.layers[i]['time_win_smp'], n_input_feats, self.layers[i]['n_kern'],
-                                             self.weight_scale, seed=seed_to_randint(self.seed)+i, rank=self.layers[i]['rank'])
-                self.layers[i]['b'] = kern2D(1, 1, self.layers[i]['n_kern'],
-                                             self.weight_scale, seed=seed_to_randint(self.seed)+i+self.n_layers)
-                self.layers[i]['Y'] = act(self.layers[i]['act'])(conv1d(X_pad, self.layers[i]['W'])
-                                                                 + self.layers[i]['b'])
+                                             self.weight_scale, seed=seed_to_randint(self.seed)+i, rank=self.layers[i]['rank'], 
+                                             distr='norm')
+                self.layers[i]['b'] = tf.abs(kern2D(1, 1, self.layers[i]['n_kern'],
+                                                    self.weight_scale, seed=seed_to_randint(self.seed)+i+self.n_layers,
+                                                 distr='norm'))
+                self.layers[i]['Y'] = act(self.layers[i]['act'])(conv1d(X_pad, self.layers[i]['W']) + self.layers[i]['b'])
 
             elif self.layers[i]['type'] == 'reweight':
+
+                print('Loc reweight')
+
                 self.layers[i]['W'] = kern2D(1, n_input_feats, self.layers[i]['n_kern'],
-                                             self.weight_scale, seed_to_randint(self.seed)+i)
-                self.layers[i]['Y'] = act(self.layers[i]['act'])(
-                    conv1d(X, self.layers[i]['W']))
+                                             self.weight_scale, seed=seed_to_randint(self.seed)+i,
+                                             distr='norm')
+                self.layers[i]['b'] = tf.abs(kern2D(1, 1, self.layers[i]['n_kern'],
+                                                    self.weight_scale, seed=seed_to_randint(self.seed)+i+self.n_layers,
+                                                    distr='norm'))
+                self.layers[i]['Y'] = act(self.layers[i]['act'])(conv1d(X, self.layers[i]['W']) + self.layers[i]['b'])
 
             elif self.layers[i]['type'] == 'reweight-positive':
+
+                print('Loc reweight-positive')
+
                 self.layers[i]['W'] = tf.abs(kern2D(1, n_input_feats, self.layers[i]['n_kern'],
-                                                    self.weight_scale, seed=seed_to_randint(self.seed)+i))
-                self.layers[i]['Y'] = act(self.layers[i]['act'])(conv1d(X, self.layers[i]['W']))
+                                                    self.weight_scale, seed=seed_to_randint(self.seed)+i,
+                                                    distr='norm'))
+                self.layers[i]['b'] = tf.abs(kern2D(1, 1, self.layers[i]['n_kern'],
+                                                    self.weight_scale, seed=seed_to_randint(self.seed)+i+self.n_layers,
+                                                    distr='norm'))
+                self.layers[i]['Y'] = act(self.layers[i]['act'])(conv1d(X, self.layers[i]['W']) + self.layers[i]['b'])
 
             elif self.layers[i]['type'] == 'normalization':
 
@@ -177,9 +214,12 @@ class Net:
                 raise NameError('No matching layer type')
 
         # remove padding-induced extensions
+
+        print('Loc 1')
         self.Y = self.layers[self.n_layers - 1]['Y'][:, 0:self.n_tps_input, :]
 
         # loss
+        print('Loc 2')
         if self.loss_type == 'squared_error':
             self.loss = tf.reduce_mean(tf.square(self.D - self.Y))
         elif self.loss_type == 'poisson':
@@ -188,10 +228,21 @@ class Net:
             raise NameError('Loss must be squared_error or poisson')
 
         # gradient optimizer
-        self.train_step = tf.train.AdamOptimizer(
-            self.learning_rate).minimize(self.loss)
+        print('Loc 3')
+        if self.optimizer == 'Adam':
+            self.train_step = tf.train.AdamOptimizer(
+                self.learning_rate).minimize(self.loss)
+        elif self.optimizer == 'GradientDescent':
+            self.train_step = tf.train.GradientDescentOptimizer(
+                self.learning_rate).minimize(self.loss)
+        elif self.optimizer == 'RMSProp':
+            self.train_step = tf.train.RMSPropOptimizer(
+                self.learning_rate).minimize(self.loss)
+        else:
+            raise NameError('No matching optimizer')
 
         # initialize global variables
+        print('Loc 4')
         if initialize:
             self.initialize()
 
@@ -242,9 +293,12 @@ class Net:
 
         with self.sess.as_default():
 
+            # indices for this batch
+            batch_inds = np.arange(0, batch_size)
+
             # evaluate loss before any training
             if len(self.train_loss) == 0:
-                train_dict = self.feed_dict(F, D=D, inds=train_inds[np.arange(0, batch_size)],
+                train_dict = self.feed_dict(F, D=D, inds=train_inds[batch_inds],
                                             learning_rate=learning_rate)
                 self.train_loss.append(self.loss.eval(feed_dict=train_dict))
                 if len(val_inds) > 0:
@@ -252,14 +306,12 @@ class Net:
                 if len(test_inds) > 0:
                     self.test_loss.append(self.loss.eval(feed_dict=test_dict))
                 self.iteration = [0]
-
-            # indices for this batch
-            batch_inds = np.arange(0, batch_size)
+            
             not_improved = 0
             for i in range(max_iter):
 
                 # update
-                train_dict = self.feed_dict(F, D=D, inds=train_inds[np.arange(0, batch_size)],
+                train_dict = self.feed_dict(F, D=D, inds=train_inds[batch_inds],
                                             learning_rate=learning_rate)
                 self.train_step.run(feed_dict=train_dict)
 
@@ -303,7 +355,10 @@ class Net:
                             break
 
                 # update batch
-                batch_inds = np.mod(batch_inds + batch_size, len(train_inds))
+                batch_inds = batch_inds + batch_size
+                if batch_inds[-1] > len(train_inds):
+                    np.random.shuffle(train_inds)
+                    batch_inds = np.arange(batch_size)
 
             # load the best loss
             if early_stopping_steps > 0:
