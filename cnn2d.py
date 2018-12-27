@@ -15,6 +15,10 @@ def weights_tnorm(shape, sig=0.1, seed=0):
         shape, stddev=sig, mean=sig, seed=seed))
     return W
 
+def weights_norm(shape, sig=0.1, seed=0):
+    W = tf.Variable(tf.random_normal(shape, stddev=sig, mean=0, seed=seed))
+    return W
+
 def poisson(prediction, response):
     return tf.reduce_mean(tf.reduce_sum(prediction - response * tf.log(prediction + 1e-5), 1), name='poisson')
 
@@ -43,28 +47,56 @@ def seed_to_randint(seed):
     np.random.seed(seed)
     return np.random.randint(1e9)
 
-def kern2D(n_t, n_freq, n_feats, n_kern, sig, rank=None, seed=0):
+# def param_bases(global_params, basis_params, neuron_params, n_bases, n_neurons, strf_rank, neuron_rank):
 
-    if rank is None:
-        W = weights_tnorm([n_t, n_freq, n_feats, n_kern], sig=sig, seed=seed_to_randint(seed))
+# def kern2D_wrapper(type, P):
+
+#     if type='param':
+#         W_list = []
+#         for i in range(P['n_feats']):
+#             X = param_kern(P['global_params'], P['basis_params'], P['neuron_params'], P['n_bases'], P['n_neurons'], P['strf_rank'], P['neuron_rank'])
+#             dims = np.int32(X.shape)
+#             W_list.append(tf.reshape(X, [dims[0], dims[1], 1, dims[2]]))
+#         W = tf.concat(W_list, 3)
+
+#     elif type='nonparam':
+#         W = kern2D(P['n_t'], P['n_freq'], P['n_feats'], P['n_kern'], P['sig'], rank=P['rank'], seed=P['seed']):
+#     else:
+#         raise NameError('Conditional fell through')
+
+#     return W
+
+
+def kern2D(n_t, n_freq, n_feats, n_kern, sig, rank=None, seed=0, distr='tnorm'):
+
+    if distr == 'tnorm':
+        fn = weights_tnorm
+    elif distr == 'norm':
+        fn = weights_norm
     else:
+        raise NameError('No matching distribution')
+
+    print('started creating feats')
+    print(rank)
+    if rank is None:
+        W = fn([n_t, n_freq, n_feats, n_kern], sig=sig, seed=seed_to_randint(seed))
+    else:
+        # import pdb; pdb.set_trace()
         W_list = []
         for i in range(n_kern):
-            W_rank1_list = []
-            for j in range(rank):
-                W_rank1_list.append(weights_tnorm([n_t, 1, 1, 1], sig=sig, seed=seed_to_randint(seed) + 0 + 3*j + 3*rank*i)
-                                    *weights_tnorm([1, n_freq, 1, 1], sig=sig, seed=seed_to_randint(seed) + 1 + 3*j + 3*rank*i)
-                                    *weights_tnorm([1, 1, n_feats, 1], sig=sig, seed=seed_to_randint(seed) + 2 + 3*j + 3*rank*i))
-            W_list.append(tf.reduce_mean(tf.concat(W_rank1_list, 3), axis=3, keep_dims=True))
-        W = tf.concat(W_list, 3)
+            for k in range(n_feats):
+                x = tf.matmul(fn([n_t, rank], sig=sig, seed=seed_to_randint(seed)+k*2+i*2*n_feats), fn([rank, n_freq], sig=sig, seed=seed_to_randint(seed)+1+k*2+i*2*n_feats))
+            W_list.append(tf.reshape(x, [n_t, n_freq, 1]))
+        W = tf.reshape(tf.concat(W_list, 2), [n_t, n_freq, n_feats, n_kern])
+        print(W.shape)
 
+    print('finished creating feats')
     return W
-
 
 class Net:
 
     def __init__(self, data_dims, n_freqs, n_feats, sr_Hz, layers, loss_type='squared_error',
-                 weight_scale=0.1, seed=0, log_dir=None, log_id=None):
+                 weight_scale=0.1, seed=0, log_dir=None, log_id=None, optimizer='Adam'):
 
         # dimensionality of feature sand data
         self.n_stim = data_dims[0]
@@ -87,11 +119,15 @@ class Net:
         self.layers = layers
         self.n_layers = len(layers)
         for i in range(self.n_layers):
-            self.layers[i]['time_win_smp'] = np.int32(
-                np.round(sr_Hz * self.layers[i]['time_win_sec']))
+            if self.layers[i]['time_win_sec']==0:
+                self.layers[i]['time_win_smp'] = 1
+            else:
+                self.layers[i]['time_win_smp'] = np.int32(
+                    np.round(sr_Hz * self.layers[i]['time_win_sec']))
         assert(self.layers[self.n_layers - 1]['n_kern'] == self.n_resp)
 
         # other misc parameters
+        self.optimizer = optimizer
         self.loss_type = loss_type
         self.train_loss = []
         self.val_loss = []
@@ -142,11 +178,10 @@ class Net:
                 X_pad = tf.pad(X, [[0, 0], [pad_size, 0], [0, 0], [0, 0]])
 
                 self.layers[i]['W'] = kern2D(self.layers[i]['time_win_smp'], self.layers[i]['freq_win_smp'], n_input_feats, self.layers[i]['n_kern'],
-                                             self.weight_scale, seed=seed_to_randint(self.seed)+i, rank=self.layers[i]['rank'])
-                self.layers[i]['b'] = kern2D(1, 1, 1, self.layers[i]['n_kern'],
-                                             self.weight_scale, seed=seed_to_randint(self.seed)+i+self.n_layers)
-                self.layers[i]['Y'] = act(self.layers[i]['act'])(conv2d(X_pad, self.layers[i]['W'])
-                                                                 + self.layers[i]['b'])
+                                             self.weight_scale, seed=seed_to_randint(self.seed)+i, rank=self.layers[i]['rank'], distr='norm')
+                self.layers[i]['b'] = tf.abs(kern2D(1, 1, 1, self.layers[i]['n_kern'],
+                                                    self.weight_scale, seed=seed_to_randint(self.seed)+i+self.n_layers, distr='norm'))
+                self.layers[i]['Y'] = act(self.layers[i]['act'])(conv2d(X_pad, self.layers[i]['W']) + self.layers[i]['b'])
 
             elif self.layers[i]['type'] == 'conv1d':
 
@@ -161,9 +196,9 @@ class Net:
 
                 # weights
                 self.layers[i]['W'] = kern2D(self.layers[i]['time_win_smp'], n_freqs_last_layer, n_input_feats, self.layers[i]['n_kern'],
-                                             self.weight_scale, seed=seed_to_randint(self.seed)+i, rank=self.layers[i]['rank'])
-                self.layers[i]['b'] = kern2D(1, 1, 1, self.layers[i]['n_kern'],
-                                             self.weight_scale, seed=seed_to_randint(self.seed)+i+self.n_layers)
+                                             self.weight_scale, seed=seed_to_randint(self.seed)+i, rank=self.layers[i]['rank'], distr='norm')
+                self.layers[i]['b'] = tf.abs(kern2D(1, 1, 1, self.layers[i]['n_kern'],
+                                                    self.weight_scale, seed=seed_to_randint(self.seed)+i+self.n_layers, distr='norm'))
 
                 # unwrap frequency and feature dimension
                 # -> stim x time x (freq/feature)
@@ -185,31 +220,6 @@ class Net:
                 # -> stim x time x freq x output kernels
                 self.layers[i]['Y'] = tf.reshape(Y_unwrap, [-1, n_tps_curr_layer, 1, self.layers[i]['n_kern']])
 
-            elif self.layers[i]['type'] == 'reweight':
-                self.layers[i]['W'] = kern2D(1, 1, n_input_feats, self.layers[i]['n_kern'],
-                                             self.weight_scale, seed_to_randint(self.seed)+i)
-                self.layers[i]['Y'] = act(self.layers[i]['act'])(conv2d(X, self.layers[i]['W']))
-
-            elif self.layers[i]['type'] == 'reweight-positive':
-                self.layers[i]['W'] = tf.abs(kern2D(1, 1, n_input_feats, self.layers[i]['n_kern'],
-                                                    self.weight_scale, seed=seed_to_randint(self.seed)+i))
-                self.layers[i]['Y'] = act(self.layers[i]['act'])(conv2d(X, self.layers[i]['W']))
-
-            elif self.layers[i]['type'] == 'normalization':
-
-                # pad input to ensure causality
-                pad_size = np.int32(
-                    np.floor(self.layers[i]['time_win_smp'] / 2))
-                X_pad = tf.pad(X, [[0, 0], [pad_size, 0], [0, 0], [0, 0]])
-
-                self.layers[i]['W'] = tf.abs(kern2D(self.layers[i]['time_win_smp'], self.layers[i]['freq_win_smp'], n_input_feats, self.layers[i]['n_kern'],
-                                                    self.weight_scale, seed=seed_to_randint(self.seed)+i, rank=self.layers[i]['rank']))
-                self.layers[i]['b'] = tf.abs(kern2D(1, 1, 1, self.layers[i]['n_kern'],
-                                                    self.weight_scale, seed=seed_to_randint(self.seed)+i+self.n_layers))
-                self.layers[i]['Y'] = X_pad / (act(self.layers[i]['act'])(conv2d(tf.abs(X_pad), self.layers[i]['W'])) + self.layers[i]['b'])
-
-                #import pdb; pdb.set_trace()
-
             else:
                 raise NameError('No matching layer type')
 
@@ -224,15 +234,28 @@ class Net:
 
         # loss
         if self.loss_type == 'squared_error':
-            self.loss = tf.reduce_mean(tf.square(self.D - self.Y))
+            self.error = tf.reduce_mean(tf.square(self.D - self.Y))
         elif self.loss_type == 'poisson':
-            self.loss = poisson(self.D, self.Y)
+            self.error = poisson(self.D, self.Y)
         else:
             raise NameError('Loss must be squared_error or poisson')
 
+        self.penalty = tf.zeros((1,))
+
+        self.loss = self.error + self.penalty
+
         # gradient optimizer
-        self.train_step = tf.train.AdamOptimizer(
-            self.learning_rate).minimize(self.loss)
+        if self.optimizer == 'Adam':
+            self.train_step = tf.train.AdamOptimizer(
+                self.learning_rate).minimize(self.loss)
+        elif self.optimizer == 'GradientDescent':
+            self.train_step = tf.train.GradientDescentOptimizer(
+                self.learning_rate).minimize(self.loss)
+        elif self.optimizer == 'RMSProp':
+            self.train_step = tf.train.RMSPropOptimizer(
+                self.learning_rate).minimize(self.loss)
+        else:
+            raise NameError('No matching optimizer')
 
         # initialize global variables
         if initialize:
@@ -243,7 +266,7 @@ class Net:
         if inds is None:
             inds = np.arange(F.shape[0])
 
-        d = {self.F: F[inds, :, :]}
+        d = {self.F: F[inds, :, :, :]}
 
         if not (D is None):
             d[self.D] = D[inds, :, :]
@@ -285,24 +308,25 @@ class Net:
 
         with self.sess.as_default():
 
+            # indices for this batch
+            batch_inds = np.arange(0, batch_size)
+
             # evaluate loss before any training
             if len(self.train_loss) == 0:
-                train_dict = self.feed_dict(F, D=D, inds=train_inds[np.arange(0, batch_size)],
+                train_dict = self.feed_dict(F, D=D, inds=train_inds[batch_inds],
                                             learning_rate=learning_rate)
                 self.train_loss.append(self.loss.eval(feed_dict=train_dict))
                 if len(val_inds) > 0:
-                    self.val_loss.append(self.loss.eval(feed_dict=val_dict))
+                    self.val_loss.append(self.error.eval(feed_dict=val_dict))
                 if len(test_inds) > 0:
-                    self.test_loss.append(self.loss.eval(feed_dict=test_dict))
+                    self.test_loss.append(self.error.eval(feed_dict=test_dict))
                 self.iteration = [0]
-
-            # indices for this batch
-            batch_inds = np.arange(0, batch_size)
+            
             not_improved = 0
             for i in range(max_iter):
 
                 # update
-                train_dict = self.feed_dict(F, D=D, inds=train_inds[np.arange(0, batch_size)],
+                train_dict = self.feed_dict(F, D=D, inds=train_inds[batch_inds],
                                             learning_rate=learning_rate)
                 self.train_step.run(feed_dict=train_dict)
 
@@ -315,12 +339,12 @@ class Net:
                     train_loss = self.loss.eval(feed_dict=train_dict)
                     self.train_loss.append(train_loss)
                     if len(val_inds) > 0:
-                        validation_loss = self.loss.eval(feed_dict=val_dict)
+                        validation_loss = self.error.eval(feed_dict=val_dict)
                         stop_loss = validation_loss
                         self.val_loss.append(validation_loss)
                     if len(test_inds) > 0:
                         self.test_loss.append(
-                            self.loss.eval(feed_dict=test_dict))
+                            self.error.eval(feed_dict=test_dict))
 
                     # early stopping / saving
                     if early_stopping_steps > 0:
@@ -346,7 +370,10 @@ class Net:
                             break
 
                 # update batch
-                batch_inds = np.mod(batch_inds + batch_size, len(train_inds))
+                batch_inds = batch_inds + batch_size
+                if batch_inds[-1] > len(train_inds):
+                    np.random.shuffle(train_inds)
+                    batch_inds = np.arange(batch_size)
 
             # load the best loss
             if early_stopping_steps > 0:
