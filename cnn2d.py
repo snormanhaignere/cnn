@@ -86,7 +86,9 @@ def kern2D(n_t, n_freq, n_feats, n_kern, sig, rank=None, seed=0, distr='tnorm'):
         for i in range(n_kern):
             for k in range(n_feats):
                 x = tf.matmul(fn([n_t, rank], sig=sig, seed=seed_to_randint(seed)+k*2+i*2*n_feats), fn([rank, n_freq], sig=sig, seed=seed_to_randint(seed)+1+k*2+i*2*n_feats))
-            W_list.append(tf.reshape(x, [n_t, n_freq, 1]))
+                W_list.append(tf.reshape(x, [n_t, n_freq, 1]))
+        print(len(W_list))
+        print(tf.concat(W_list, 2).shape)
         W = tf.reshape(tf.concat(W_list, 2), [n_t, n_freq, n_feats, n_kern])
         print(W.shape)
 
