@@ -43,6 +43,7 @@ def act(name):
         raise NameError('No matching activation')
     return fn
 
+
 def seed_to_randint(seed):
     np.random.seed(seed)
     return np.random.randint(1e9)
@@ -126,6 +127,9 @@ class Net:
             else:
                 self.layers[i]['time_win_smp'] = np.int32(
                     np.round(sr_Hz * self.layers[i]['time_win_sec']))
+            if not('sign' in self.layers[i]):
+                self.layers[i]['sign'] = 'none'
+
         assert(self.layers[self.n_layers - 1]['n_kern'] == self.n_resp)
 
         # other misc parameters
@@ -164,6 +168,13 @@ class Net:
         self.L = []
         for i in range(self.n_layers):
 
+            if self.layers[i]['sign'] == 'pos':
+                fn = tf.abs
+            if self.layers[i]['sign'] == 'neg':
+                fn = lambda x: -tf.abs(x)
+            elif self.layers[i]['sign'] == 'none':
+                fn = tf.identity
+
             if i == 0:
                 X = self.F
                 n_input_feats = self.n_feats
@@ -179,8 +190,8 @@ class Net:
                     np.floor(self.layers[i]['time_win_smp'] / 2))
                 X_pad = tf.pad(X, [[0, 0], [pad_size, 0], [0, 0], [0, 0]])
 
-                self.layers[i]['W'] = kern2D(self.layers[i]['time_win_smp'], self.layers[i]['freq_win_smp'], n_input_feats, self.layers[i]['n_kern'],
-                                             self.weight_scale, seed=seed_to_randint(self.seed)+i, rank=self.layers[i]['rank'], distr='norm')
+                self.layers[i]['W'] = fn(kern2D(self.layers[i]['time_win_smp'], self.layers[i]['freq_win_smp'], n_input_feats, self.layers[i]['n_kern'],
+                                                self.weight_scale, seed=seed_to_randint(self.seed)+i, rank=self.layers[i]['rank'], distr='norm'))
                 self.layers[i]['b'] = tf.abs(kern2D(1, 1, 1, self.layers[i]['n_kern'],
                                                     self.weight_scale, seed=seed_to_randint(self.seed)+i+self.n_layers, distr='norm'))
                 self.layers[i]['Y'] = act(self.layers[i]['act'])(conv2d(X_pad, self.layers[i]['W']) + self.layers[i]['b'])
@@ -197,8 +208,8 @@ class Net:
                 n_freqs_last_layer = np.int32(X_pad.shape[2])
 
                 # weights
-                self.layers[i]['W'] = kern2D(self.layers[i]['time_win_smp'], n_freqs_last_layer, n_input_feats, self.layers[i]['n_kern'],
-                                             self.weight_scale, seed=seed_to_randint(self.seed)+i, rank=self.layers[i]['rank'], distr='norm')
+                self.layers[i]['W'] = fn(kern2D(self.layers[i]['time_win_smp'], n_freqs_last_layer, n_input_feats, self.layers[i]['n_kern'],
+                                                self.weight_scale, seed=seed_to_randint(self.seed)+i, rank=self.layers[i]['rank'], distr='norm'))
                 self.layers[i]['b'] = tf.abs(kern2D(1, 1, 1, self.layers[i]['n_kern'],
                                                     self.weight_scale, seed=seed_to_randint(self.seed)+i+self.n_layers, distr='norm'))
 
