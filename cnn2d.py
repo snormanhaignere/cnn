@@ -213,7 +213,7 @@ class Net:
                 self.layers[i]['b'] = tf.abs(kern2D(1, 1, 1, self.layers[i]['n_kern'],
                                                     self.weight_scale, seed=seed_to_randint(self.seed)+i+self.n_layers, distr='norm'))
 
-                # unwrap frequency and feature dimension
+                # unwrap frequency and feature dimensionality
                 # -> stim x time x (freq/feature)
                 # -> time x (freq/feature) x kernel
                 print(X_pad.shape)
@@ -235,6 +235,10 @@ class Net:
 
             else:
                 raise NameError('No matching layer type')
+
+        self.create_loss(initialize=initialize)
+
+    def create_loss(self, initialize=True):
 
         # remove padding-induced extensions
         self.Y = self.layers[self.n_layers - 1]['Y'][:, 0:self.n_tps_input, :, :]
